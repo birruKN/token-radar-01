@@ -1,8 +1,10 @@
 // Token Launch Radar — the entry program (Node 22, standard library only).
 //
 // Reads the sealed DefiLlama snapshot (default /input/snapshot.json, or --input <file|dir>),
-// fits the comps-curve model in lib/model.ts to the snapshot's own live-token market, ranks
-// every independent pre-token protocol by implied value, and writes to /output:
+// fits the comps-curve model in lib/model.ts to the snapshot's own live-token market, rehearses
+// the method blind on a slug-hash split of that market (fit split only; held-out protocols are
+// priced and scored, never fitted on), ranks every independent pre-token protocol by implied
+// value, and writes to /output:
 //   board.json    the ranked board the gate checks
 //   data.js       the dashboard's dataset, written beside dashboard/ for the page to read
 //   dashboard/    a copy of this repository's dashboard/
@@ -98,5 +100,9 @@ process.stdout.write(
     `curve fitted on ${radar.calibration.fitted_n} live comps (slope ${radar.calibration.slope}, scatter ${radar.calibration.scatter_dex} dex)\n` +
     `token radar: ${board.length} rows ranked (${radar.counts.large} above the floor, ${radar.counts.early} early), ` +
     `${radar.counts.live} live-token protocols set aside; wrote board.json, data.js, dashboard/ (${dashFiles.length} files), ` +
-    `screenshots/ (${shots.length} images) and dossier.json to ${out}\n`,
+    `screenshots/ (${shots.length} images) and dossier.json to ${out}\n` +
+    `token radar: blind rehearsal — fitted on ${radar.validation.fit_n} of ${radar.validation.live_n} live protocols, ` +
+    `held out ${radar.validation.held_out_n}: median error ${radar.validation.held_out_median_abs_err_dex} dex held out ` +
+    `vs ${radar.validation.fit_median_abs_err_dex} dex in sample; band coverage ` +
+    `${radar.validation.held_out_band_coverage} held out vs ${radar.validation.fit_band_coverage} in sample\n`,
 );

@@ -1,6 +1,16 @@
-# Token Launch Radar — token-radar-01 entry
+# token-radar-01
 
-A radar for protocols that have not launched a token yet, priced off the ones that have.
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/birruKN/token-radar-01/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/birruKN/token-radar-01/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+
+A radar for protocols that have not launched a token yet, priced off the ones that have — and, in this version, honest about its own accuracy: the valuation curve is rehearsed blind on a held-out split of the market before it is allowed to price the board, and the rehearsal numbers are printed on the dashboard.
+
+## Run it
+
+```sh
+node main.ts --input /input --output /output
+```
 
 `main.ts` reads a DefiLlama snapshot (`/input/snapshot.json`, or `--input <file|dir>`), ranks every
 independent pre-token protocol it can defend, and writes `board.json`, `data.js`, a copy of
@@ -8,7 +18,7 @@ independent pre-token protocol it can defend, and writes `board.json`, `data.js`
 to the output directory (`--output`, `MAKEFUN_OUTPUT_DIR`, or `/output`). Node 22+, standard
 library only, no network. Two runs over the same snapshot write identical bytes.
 
-## The valuation model — "comps-curve v2"
+## The valuation model — "comps-curve v3"
 
 Everything is derived from the snapshot's own figures at run time; nothing is hard-coded per
 protocol, and there are no fees or revenue fields in the snapshot, so none are claimed.
@@ -31,6 +41,18 @@ protocol, and there are no fees or revenue fields in the snapshot, so none are c
 4. **Band.** Each row carries a one-sigma range (`implied / 10^0.8403` to `implied * 10^0.8403`):
    the spread across which the market actually prices comparable protocols.
 
+## Tested blind — the held-out rehearsal
+
+New in v3. Before the board is priced, the method has to survive a rehearsal it cannot peek at:
+the calibration set is split by a fixed hash of each protocol's slug (bucket 0 of 5 is held out —
+94 protocols fit, 34 are held out in the practice snapshot). The curve and category factors are
+fitted on the fit split only, then both splits are priced under that blind fit and scored against
+their recorded market caps. On the practice snapshot the rehearsal reports, computed at run time
+and printed on the dashboard: median absolute error **0.60 dex held out vs 0.44 dex in sample**,
+and ±1σ band coverage **67.7% held out vs 72.3% in sample**. The board itself is then priced from
+the full fit — the dashboard says so plainly — but the reader can see exactly how much the method
+degrades on data it never fitted, instead of taking the in-sample scatter on faith.
+
 ## Board membership
 
 Every watchlist protocol (all 40), plus every other pre-token protocol that is an independent
@@ -46,6 +68,11 @@ TVL (capital $25–$250) and age (a 30–60 day hold), with a cost and a time on
 
 `dashboard/` is a self-contained page (no external references) rendered from `data.js`: a sortable,
 filterable board (search, category, chain, tier), a live-comps tab showing the calibration set with
-the market's own figures, and a per-protocol detail view with the model's arithmetic, the
-category's live comparables and the farm plan. View state lives in the URL hash, so every view —
-including the three screenshots — is reproducible from a link.
+the market's own figures, a per-protocol detail view with the model's arithmetic, the
+category's live comparables and the farm plan, and the blind-test panel with the rehearsal's
+method and numbers. View state lives in the URL hash, so every view — including the four
+screenshots — is reproducible from a link.
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=4zccysyp&utm_source=github&utm_medium=readme&utm_campaign=token-radar-01) · AI agents build software for cash rewards</sub>

@@ -264,11 +264,38 @@
         el('li', null, el('b', { text: 'Fit the market. ' }), 'A power law is fitted by least squares to the live protocols that carry both a market cap and a TVL (one 2.5-sigma clip, then a refit).'),
         el('li', null, el('b', { text: 'Adjust by category. ' }), 'Each category\u2019s median residual against the curve, shrunk toward zero and clamped, so categories whose tokens capture little of their TVL (lending, liquid staking) price lower and those that capture more (RWA, basis trading) price higher.'),
         el('li', null, el('b', { text: 'Adjust by the protocol. ' }), 'Momentum from its seven-day TVL change, and maturity from how long it has run with no token. Both are small and stated below.'),
-        el('li', null, el('b', { text: 'Rank, with the band showing. ' }), 'The one-sigma band is the fitted scatter: the market prices similar protocols across that whole range, and any single point value should be read inside it.')
+        el('li', null, el('b', { text: 'Rank, with the band showing. ' }), 'The one-sigma band is the fitted scatter: the market prices similar protocols across that whole range, and any single point value should be read inside it.'),
+        el('li', null, el('b', { text: 'Test the method blind. ' }), 'Before the shipped fit touches every live protocol, the whole method is rehearsed on a split it cannot peek across — the panel below shows how that blind fit priced the protocols it never saw.')
       ),
       el('div', { class: 'formula', text: 'implied = 10^(' + CAL.intercept.toFixed(4) + ' + ' + CAL.slope.toFixed(4) + ' x log10(TVL))  x  category factor  x  (1 + 0.30 x clamp(7d, -40, +60)/100)  x  (0.75 + 0.25 x min(age, 1095d)/1095)' }),
       el('div', { class: 'factors' }, factors),
       el('p', { class: 'sub', text: 'Board membership is a rule: every watchlist protocol, plus every other pre-token protocol that is an independent launch candidate — not an exchange, not a versioned pool, and not a wrapped, staked or bridged product of a token that already trades. Exchanges, wrapped products and versioned pools record no token of their own to launch, so they are set aside with the live set, not ranked.' })
+    );
+  }
+
+  function validationPanel() {
+    var v = DATA.validation;
+    if (!v) return null;
+    function pct(x) { return (x * 100).toFixed(1) + '%'; }
+    function dex(x) { return x.toFixed(2) + ' dex'; }
+    function vstat(label, value) {
+      return el('div', { class: 'fact' }, el('span', { text: label }), el('b', { text: value }));
+    }
+    return el('section', { class: 'panel method validation' },
+      el('h2', { text: 'Tested blind: the held-out rehearsal' }),
+      el('p', { class: 'sub', text: 'The board above is priced from a curve fitted to all ' + v.live_n + ' live protocols. To test the method rather than the fit, it was first rehearsed blind: the live set was split by a hash of each protocol\u2019s slug — a fifth held out, the split fixed by name alone before any number was fitted — and the curve and category factors were fitted on the remaining ' + v.fit_n + ' only (' + v.fit_fitted_n + ' of them survive the fit\u2019s own outlier clip). The ' + v.held_out_n + ' held-out protocols were then priced by that blind fit, through the same arithmetic the board uses, and set against the market caps the snapshot records for them. Nothing about the held-out set reaches the shipped board; these figures are the evidence for how far a price from this method can be trusted.' }),
+      el('div', { class: 'facts vstats' },
+        vstat('Fitted blind on', v.fit_n + ' protocols'),
+        vstat('Held out, never fitted', String(v.held_out_n)),
+        vstat('Blind band (\u00b11\u03c3)', dex(v.band_dex)),
+        vstat('Median error, held out', dex(v.held_out_median_abs_err_dex)),
+        vstat('Median error, in sample', dex(v.fit_median_abs_err_dex)),
+        vstat('Inside the band, held out', pct(v.held_out_band_coverage)),
+        vstat('Inside the band, in sample', pct(v.fit_band_coverage)),
+        vstat('Mean signed error, held out', (v.held_out_mean_signed_err_dex > 0 ? '+' : '') + dex(v.held_out_mean_signed_err_dex)),
+        vstat('Typical miss, held out', 'within ~' + Math.pow(10, v.held_out_median_abs_err_dex).toFixed(1) + 'x of the real cap')
+      ),
+      el('p', { class: 'sub', text: 'A dex is a factor of ten in the error: a median held-out error of ' + dex(v.held_out_median_abs_err_dex) + ' means the blind price typically lands within about ' + Math.pow(10, v.held_out_median_abs_err_dex).toFixed(1) + 'x of the cap the market actually gave the protocol, either way. In-sample figures are the same blind fit scored on the protocols it trained on — the gap between the two rows is what fitting on the whole set would hide. The band each row of the board carries is the full fit\u2019s own scatter, ' + CAL.scatter_dex.toFixed(2) + ' dex.' })
     );
   }
 
@@ -344,7 +371,11 @@
     shell.appendChild(strip());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'board' ? boardTable() : liveTable());
-    if (state.tab === 'board') shell.appendChild(methodPanel());
+    if (state.tab === 'board') {
+      shell.appendChild(methodPanel());
+      var vp = validationPanel();
+      if (vp) shell.appendChild(vp);
+    }
     shell.appendChild(el('footer', { class: 'foot' },
       el('p', { text: 'Source: ' + DATA.source + '. "No token on record" is DefiLlama\u2019s record, not proof a protocol has no token anywhere.' }),
       el('p', { text: 'Implied values are this board\u2019s model, ' + DATA.model_version + ', computed from the snapshot\u2019s own figures at run time. They are not prices, offers or predictions.' })

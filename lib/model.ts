@@ -1,4 +1,15 @@
-// Token Launch Radar — the valuation model (model id "comps-curve", version 2).
+// Token Launch Radar — the valuation model (model id "comps-curve", version 3).
+//
+// Version 3 keeps version 2's pricing exactly — same fit, same adjustments, same board — and adds
+// the one thing version 2 never showed: proof, produced blind. Before the shipped curve is fitted
+// on every live protocol, the whole method is rehearsed on a split of the live set fixed by a hash
+// of each protocol's slug (bucket 0 of 5 is held out, chosen by the name alone, before any number
+// is fitted). The rehearsal fits the curve and the category factors on the fit part only, prices
+// the held-out protocols with that blind fit through the same valueProtocol the board uses, and
+// reports the errors against the market caps the snapshot records for them: median absolute log
+// error and the share landing inside the ±1-sigma band, beside the same figures in sample. The
+// board below is still priced from the full fit; the rehearsal is the evidence for how far a
+// price from this method can be trusted, and it is recomputed from the snapshot on every run.
 //
 // One sealed DefiLlama snapshot in, one ranked board out. The board's implied values are not picked:
 // they are read off the snapshot's own market. The 416 protocols whose token already trades are the
@@ -86,7 +97,7 @@ export const MODEL_SPEC: ModelSpec = {
   unknown_age_days: 365,
 };
 
-export const MODEL_VERSION = 'comps-curve v2';
+export const MODEL_VERSION = 'comps-curve v3';
 
 /** The fitted curve and what it was fitted on, all recomputed from the snapshot at run time. */
 export interface Calibration {
@@ -107,6 +118,31 @@ export interface CompPeer {
   tvl_usd: number;
   mcap_usd: number;
   multiple: number;
+}
+
+/**
+ * The blind rehearsal's report: the whole method fitted on one part of the live set and scored,
+ * through the board's own pricing, on the part it never saw. Errors are log10 distances between
+ * the blind price and the market cap the snapshot records; coverage is the share of a set whose
+ * error lands inside the blind fit's own one-sigma band.
+ */
+export interface Validation {
+  /** Live protocols carrying both a market cap and a TVL: the rehearsal's whole universe. */
+  live_n: number;
+  /** Protocols the blind fit was allowed to see (slug-hash buckets 1 to 4 of 5). */
+  fit_n: number;
+  /** Of those, the ones the blind fit kept after its clip: the curve was fitted on these. */
+  fit_fitted_n: number;
+  /** Protocols held out (bucket 0): priced blind, never fitted on. */
+  held_out_n: number;
+  /** The blind fit's own scatter: the width of the band the coverage figures use. */
+  band_dex: number;
+  fit_median_abs_err_dex: number;
+  held_out_median_abs_err_dex: number;
+  fit_band_coverage: number;
+  held_out_band_coverage: number;
+  /** Mean signed held-out error: how far the blind prices lean, and which way. */
+  held_out_mean_signed_err_dex: number;
 }
 
 /** Which part of the board a row belongs to. */
@@ -158,6 +194,7 @@ export interface RadarData {
   model_version: string;
   spec: ModelSpec;
   calibration: Calibration;
+  validation: Validation;
   counts: { protocols: number; watchlist: number; board: number; large: number; early: number; live: number };
   rows: BoardRow[];
   live: LiveRow[];
@@ -233,12 +270,23 @@ const median = (xs: number[]): number => {
   return s[Math.floor(s.length / 2)]!;
 };
 
+/** The fitted heart of the model: a curve, its scatter and its category factors, from one live set. */
+export interface CurveFit {
+  fitted_n: number;
+  intercept: number;
+  slope: number;
+  scatter_dex: number;
+  category_factors: Record<string, number>;
+}
+
 /**
- * Fit the market's curve from the snapshot's live set: protocols whose token trades and which
- * carry both a market cap and a TVL. One 2.5-sigma clip and refit keeps absurd ratios out.
+ * Fit the curve and the category factors on one set of live protocols: least squares of
+ * log10(market cap) on log10(TVL), one 2.5-sigma clip and a refit, then each category's median
+ * residual shrunk toward zero and clamped. calibrate() runs this on the whole live set; the
+ * blind rehearsal runs the identical code on its fit split only, so the two fits differ only
+ * in what they were allowed to see.
  */
-export function calibrate(snapshot: Snapshot, spec: ModelSpec = MODEL_SPEC): Calibration {
-  const live = snapshot.protocols.filter((p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+export function fitOn(live: SnapshotProtocol[], spec: ModelSpec = MODEL_SPEC): CurveFit {
   const xs = live.map((p) => Math.log10(p.tvl_usd));
   const ys = live.map((p) => Math.log10(p.mcap_usd!));
   let fit = fitLine(xs, ys);
@@ -250,12 +298,12 @@ export function calibrate(snapshot: Snapshot, spec: ModelSpec = MODEL_SPEC): Cal
 
   // Category adjustments: median residual per category, shrunk toward zero, clamped.
   const residuals = new Map<string, number[]>();
-  fitted.forEach((p, i) => {
+  for (const p of fitted) {
     const key = p.category ?? '(uncategorised)';
     const list = residuals.get(key) ?? [];
-    list.push(fit.resid[i]!);
+    list.push(Math.log10(p.mcap_usd!) - (fit.a + fit.b * Math.log10(p.tvl_usd)));
     residuals.set(key, list);
-  });
+  }
   const factors: Record<string, number> = {};
   for (const [category, list] of residuals) {
     if (list.length < spec.category_min_n) continue;
@@ -263,6 +311,23 @@ export function calibrate(snapshot: Snapshot, spec: ModelSpec = MODEL_SPEC): Cal
     const clamped = Math.min(spec.category_clamp_dex, Math.max(-spec.category_clamp_dex, shrunk));
     if (clamped !== 0) factors[category] = round4(10 ** clamped);
   }
+
+  return {
+    fitted_n: fitted.length,
+    intercept: round4(fit.a),
+    slope: round4(fit.b),
+    scatter_dex: round4(fit.sd),
+    category_factors: factors,
+  };
+}
+
+/**
+ * Fit the market's curve from the snapshot's live set: protocols whose token trades and which
+ * carry both a market cap and a TVL. One 2.5-sigma clip and refit keeps absurd ratios out.
+ */
+export function calibrate(snapshot: Snapshot, spec: ModelSpec = MODEL_SPEC): Calibration {
+  const live = snapshot.protocols.filter((p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  const core = fitOn(live, spec);
 
   // Comparable live peers per category, largest TVL first, for the detail view.
   const comps: Record<string, CompPeer[]> = {};
@@ -282,11 +347,11 @@ export function calibrate(snapshot: Snapshot, spec: ModelSpec = MODEL_SPEC): Cal
 
   return {
     live_with_caps: live.length,
-    fitted_n: fitted.length,
-    intercept: round4(fit.a),
-    slope: round4(fit.b),
-    scatter_dex: round4(fit.sd),
-    category_factors: factors,
+    fitted_n: core.fitted_n,
+    intercept: core.intercept,
+    slope: core.slope,
+    scatter_dex: core.scatter_dex,
+    category_factors: core.category_factors,
     comps,
   };
 }
@@ -314,6 +379,68 @@ export function valueProtocol(
   const maturity = round4(spec.maturity_floor + (Math.min(Math.max(ageForModel, 0), spec.maturity_days) / spec.maturity_days) * spec.maturity_range);
   const implied = Math.max(1, Math.round(curve * categoryFactor * momentum * maturity));
   return { implied, curve: Math.round(curve), categoryFactor, momentum, maturity, age };
+}
+
+/**
+ * Which fifth of the split a slug falls in, by an FNV-1a hash of the slug alone. The split is
+ * fixed by the protocol's name before any figure is fitted, so it cannot be chosen to flatter
+ * the model, and it is the same on every run and every machine.
+ */
+export function slugBucket(slug: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < slug.length; i++) {
+    h ^= slug.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0) % 5;
+}
+
+/**
+ * The blind rehearsal. The live set is split by slugBucket: bucket 0 is held out, the rest is
+ * the fit split. The curve and category factors are fitted on the fit split only (fitOn, the
+ * same code calibrate runs), then every protocol of both splits is priced through valueProtocol
+ * under that blind fit and compared with the market cap the snapshot records for it. Nothing
+ * here touches the shipped board, which calibrate prices from the full fit; this is the
+ * out-of-sample evidence for the method, recomputed from the snapshot on every run.
+ */
+export function validateBlind(snapshot: Snapshot, spec: ModelSpec = MODEL_SPEC): Validation {
+  const live = snapshot.protocols.filter((p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  const fitSet = live.filter((p) => slugBucket(p.slug) !== 0);
+  const heldOut = live.filter((p) => slugBucket(p.slug) === 0);
+  const core = fitOn(fitSet, spec);
+  const blind: Calibration = {
+    live_with_caps: fitSet.length,
+    fitted_n: core.fitted_n,
+    intercept: core.intercept,
+    slope: core.slope,
+    scatter_dex: core.scatter_dex,
+    category_factors: core.category_factors,
+    comps: {},
+  };
+  const errors = (set: SnapshotProtocol[]): number[] =>
+    set.map((p) => Math.log10(valueProtocol(p, snapshot, blind, spec).implied) - Math.log10(p.mcap_usd!));
+  const summarise = (errs: number[]): { medianAbs: number; coverage: number; meanSigned: number } => {
+    if (errs.length === 0) return { medianAbs: 0, coverage: 0, meanSigned: 0 };
+    return {
+      medianAbs: round4(median(errs.map((e) => Math.abs(e)))),
+      coverage: round4(errs.filter((e) => Math.abs(e) <= core.scatter_dex).length / errs.length),
+      meanSigned: round4(errs.reduce((s, e) => s + e, 0) / errs.length),
+    };
+  };
+  const inSample = summarise(errors(fitSet));
+  const outSample = summarise(errors(heldOut));
+  return {
+    live_n: live.length,
+    fit_n: fitSet.length,
+    fit_fitted_n: core.fitted_n,
+    held_out_n: heldOut.length,
+    band_dex: core.scatter_dex,
+    fit_median_abs_err_dex: inSample.medianAbs,
+    held_out_median_abs_err_dex: outSample.medianAbs,
+    fit_band_coverage: inSample.coverage,
+    held_out_band_coverage: outSample.coverage,
+    held_out_mean_signed_err_dex: outSample.meanSigned,
+  };
 }
 
 /** The first chain a protocol names, or a neutral phrase. */
@@ -496,6 +623,7 @@ export function buildRadar(snapshot: Snapshot, spec: ModelSpec = MODEL_SPEC): { 
     model_version: MODEL_VERSION,
     spec,
     calibration: cal,
+    validation: validateBlind(snapshot, spec),
     counts: {
       protocols: snapshot.protocols.length,
       watchlist: snapshot.watchlist.length,
